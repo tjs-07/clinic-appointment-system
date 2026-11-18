@@ -1,4 +1,5 @@
 import type { Credentials } from 'google-auth-library';
+import type { Collection, Document } from 'mongodb';
 import {
   appointmentsCol,
   patientsCol,
@@ -42,7 +43,13 @@ export interface Appointment {
   consultationType?: 'online' | 'offline';
 }
 
+export interface GoogleConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
 let inMemoryTokens: Credentials | null = null;
+let inMemoryConfig: GoogleConfig | null = null;
 let tokensHydrated = false;
 
 async function ready(): Promise<void> {
@@ -213,11 +220,16 @@ export async function isSlotBookedExcluding(
 }
 
 /* ------------------------------------------------------------------ */
-/* Google OAuth tokens (stored in MongoDB, cached in memory)           */
+/* Google OAuth tokens + config (stored in MongoDB, cached in memory)  */
 /* ------------------------------------------------------------------ */
 
 function cleanEnv(value: string): string {
   return value.trim().replace(/^["']|["']$/g, '');
+}
+
+/** The tokens collection is typed for the token doc shape; this lets us also store a `config` doc in it. */
+async function genericTokensCol(): Promise<Collection<Document>> {
+  return (await googleTokensCol()) as unknown as Collection<Document>;
 }
 
 async function hydrateGoogleTokens(): Promise<void> {
@@ -233,9 +245,17 @@ async function hydrateGoogleTokens(): Promise<void> {
         expiry_date: doc.expiryDate || undefined,
       };
     }
+
+    const cfg = await (await genericTokensCol()).findOne({ _id: 'config' } as Document);
+    if (cfg?.clientId && cfg?.clientSecret && !inMemoryConfig) {
+      inMemoryConfig = {
+        clientId: cfg.clientId as string,
+        clientSecret: cfg.clientSecret as string,
+      };
+    }
   } catch (err) {
     tokensHydrated = false;
-    console.warn('[db] Could not load Google OAuth tokens from MongoDB:', err);
+    console.warn('[db] Could not load Google OAuth tokens/config from MongoDB:', err);
   }
 }
 
@@ -282,11 +302,7 @@ export function saveGoogleTokens(tokens: Credentials): void {
     });
 }
 
-export interface GoogleConfig {
-  clientId: string;
-  clientSecret: string;
-}
-
+/** Env vars win; otherwise falls back to config saved via the configure route. */
 export function getGoogleConfig(): GoogleConfig | null {
   if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     return {
@@ -294,5 +310,29 @@ export function getGoogleConfig(): GoogleConfig | null {
       clientSecret: cleanEnv(process.env.GOOGLE_CLIENT_SECRET),
     };
   }
-  return null;
+  return inMemoryConfig;
+}
+
+export async function saveGoogleConfig(config: GoogleConfig): Promise<void> {
+  inMemoryConfig = {
+    clientId: cleanEnv(config.clientId),
+    clientSecret: cleanEnv(config.clientSecret),
+  };
+
+  try {
+    const col = await genericTokensCol();
+    await col.updateOne(
+      { _id: 'config' } as Document,
+      {
+        $set: {
+          clientId: inMemoryConfig.clientId,
+          clientSecret: inMemoryConfig.clientSecret,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.warn('[db] Could not persist Google OAuth config to MongoDB:', err);
+  }
 }
