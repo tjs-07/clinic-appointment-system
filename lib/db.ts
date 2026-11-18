@@ -136,6 +136,23 @@ declare global {
   var __schemaPromise: Promise<void> | undefined;
 }
 
+function explainMongoError(err: unknown): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/alert (number )?80|tlsv1 alert internal error|ReplicaSetNoPrimary|ECONNRESET|Server selection timed out/i.test(msg)) {
+    return new Error(
+      'Could not connect to MongoDB Atlas (TLS/handshake failed). Most common cause: your current IP address is not allowed in Atlas -> Security -> Network Access. ' +
+        'Add your IP (or 0.0.0.0/0 for testing), wait ~1 minute, then restart "npm run dev". Also check the cluster is not paused. Original error: ' +
+        msg
+    );
+  }
+  if (/bad auth|Authentication failed/i.test(msg)) {
+    return new Error(
+      'MongoDB authentication failed. Check the database username/password in MONGODB_URI (Atlas -> Security -> Database Access). Original error: ' + msg
+    );
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
 function getClientPromise(): Promise<MongoClient> {
   if (!global.__mongoClientPromise) {
     const uri = process.env.MONGODB_URI;
@@ -147,11 +164,13 @@ function getClientPromise(): Promise<MongoClient> {
     const client = new MongoClient(uri, {
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 15000,
+      connectTimeoutMS: 15000,
+      family: 4, // force IPv4: avoids TLS/handshake failures on networks with broken IPv6
     });
     global.__mongoClientPromise = client.connect().catch((err) => {
       // Allow a retry on the next request instead of caching the failure
       global.__mongoClientPromise = undefined;
-      throw err;
+      throw explainMongoError(err);
     });
   }
   return global.__mongoClientPromise;

@@ -40,6 +40,8 @@ export default function AdminLoginView({
           </div>
           <h2>Dr. Aarav Mehta Clinic</h2>
           <p>Doctor &amp; Administrative Management Portal</p>
+          <p>id : admin@123 </p>
+          <p>password : pass@123 </p>
         </div>
 
         {loginError && (
